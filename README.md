@@ -5,9 +5,9 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](https://opensource.org/licenses/MIT)
 [![Tests](https://img.shields.io/badge/tests-44%20passing-brightgreen.svg)]()
 
-**Multi-agent orchestration for Claude Code** — decompose complex tasks into parallel subtasks, coordinate agents in real-time, and visualize everything in a rich terminal UI.
+**Multi-agent orchestration for coding agents** — decompose complex tasks into parallel subtasks, coordinate agents in real-time, and visualize everything in a rich terminal UI.
 
-Built with the [Claude Agent SDK](https://github.com/anthropics/claude-agent-sdk-python) for the [Claude Code Hackathon](https://cerebralvalley.ai/hackathons/claude-code-hackathon-aaHFuycPfjQa5dNaxZpU) (Feb 10-16, 2026).
+Built in Python with pluggable runtimes for the [Claude Agent SDK](https://github.com/anthropics/claude-agent-sdk-python) and the [GitHub Copilot SDK](https://github.com/github/copilot-sdk).
 
 ## How It Works
 
@@ -15,16 +15,16 @@ Built with the [Claude Agent SDK](https://github.com/anthropics/claude-agent-sdk
 You: "Refactor auth module from Express middleware to Next.js API routes"
 
 Claude Swarm:
-  Phase 1:   Opus 4.6 decomposes task into dependency graph
+  Phase 1:   A planner decomposes the task into a dependency graph
   Phase 2:   Parallel agents execute subtasks with live dashboard
-  Phase 2.5: Opus 4.6 Quality Gate reviews all agent outputs
+  Phase 2.5: A reviewer checks the combined output
   Phase 3:   Results summary with costs and session replay
 ```
 
-1. **Task Decomposition** — Describe a complex task. Opus 4.6 analyzes your codebase and breaks it into a dependency graph of subtasks
-2. **Parallel Agent Spawning** — Independent subtasks run simultaneously via Claude Agent SDK. Dependent tasks wait.
+1. **Task Decomposition** — Describe a complex task. Claude Swarm uses the configured provider/model to analyze your codebase and break it into a dependency graph of subtasks
+2. **Parallel Agent Spawning** — Independent subtasks run simultaneously via the selected runtime provider. Dependent tasks wait.
 3. **Real-time Coordination** — File conflict detection prevents agents from stepping on each other. Budget enforcement stops runaway costs.
-4. **Opus Quality Gate** — After agents complete, Opus 4.6 reviews the combined output for correctness, consistency, and completeness
+4. **Quality Gate** — After agents complete, the configured review model checks the combined output for correctness, consistency, and completeness
 5. **Rich Terminal UI** — `htop`-style dashboard showing agent progress, tool usage, costs, and file conflicts in real-time
 6. **Session Replay** — Every swarm execution is recorded. Replay any session to review what each agent did.
 
@@ -40,11 +40,14 @@ git clone https://github.com/affaan-m/claude-swarm
 cd claude-swarm
 pip install -e .
 
-# Set your API key for real usage
+# Claude runtime
 export ANTHROPIC_API_KEY="sk-ant-..."
 
-# Run a swarm
+# Run a swarm with Claude
 claude-swarm "Refactor auth module from Express middleware to Next.js API routes"
+
+# Run a swarm with GitHub Copilot
+claude-swarm --provider copilot "Refactor auth module from Express middleware to Next.js API routes"
 
 # Dry run (shows plan without executing)
 claude-swarm --dry-run "Add user authentication with JWT"
@@ -64,7 +67,7 @@ claude-swarm --no-quality-gate "Quick fix: update README"
 │                                                │
 │  Phase 1: Decompose                            │
 │  ┌─────────────────────────────────────────┐   │
-│  │  Opus 4.6 Task Decomposer              │   │
+│  │  Runtime-backed Task Decomposer        │   │
 │  │  "Add auth" -> [create routes,          │   │
 │  │   add middleware, write tests, review]   │   │
 │  └──────────────┬──────────────────────────┘   │
@@ -94,7 +97,7 @@ claude-swarm --no-quality-gate "Quick fix: update README"
 │                                                │
 │  Phase 2.5: Quality Gate                       │
 │  ┌──────────────────────────────────────────┐  │
-│  │  Opus 4.6 reviews combined agent output  │  │
+│  │  Configured reviewer checks output       │  │
 │  │  Score: 8/10 | Verdict: PASS            │  │
 │  └──────────────────────────────────────────┘  │
 │                                                │
@@ -113,9 +116,10 @@ claude-swarm --no-quality-gate "Quick fix: update README"
 | **Dependency-aware scheduling** | Tasks only start when their dependencies complete |
 | **File conflict detection** | Pessimistic file locking prevents agents from editing the same file simultaneously |
 | **Budget enforcement** | Hard cost limit — cancels remaining tasks when budget is exceeded |
-| **Cost tracking** | Real-time per-agent and total cost monitoring |
-| **Opus Quality Gate** | Phase 2.5 — Opus 4.6 reviews all agent outputs for correctness and consistency |
-| **Smart model selection** | Opus 4.6 for planning + quality review, Haiku for worker agents (3x cheaper) |
+| **Cost tracking** | Real-time per-agent and total cost monitoring where the provider exposes usage/cost data |
+| **Provider runtime abstraction** | Run the swarm through Claude Agent SDK or GitHub Copilot SDK |
+| **Quality Gate** | Phase 2.5 — a configurable review model checks all agent outputs for correctness and consistency |
+| **Per-phase model selection** | Configure separate planning, review, and worker models |
 | **Task retry** | Failed tasks are automatically retried with configurable attempt limits |
 | **Demo mode** | `--demo` flag shows animated TUI without API key (great for presentations) |
 | **Session recording** | Every swarm execution recorded as JSONL events |
@@ -131,6 +135,8 @@ claude-swarm [OPTIONS] TASK
 
 Options:
   -d, --cwd TEXT            Working directory (default: .)
+  --provider [claude|copilot]
+                            Agent runtime provider (default: claude)
   -n, --max-agents INTEGER  Max concurrent agents (default: 4)
   -m, --model TEXT          Decomposition model (default: opus)
   -b, --budget FLOAT        Max budget in USD (default: 5.0)
@@ -138,7 +144,7 @@ Options:
   -c, --config PATH         Path to swarm.yaml
   --demo                    Run demo simulation (no API key needed)
   --dry-run                 Show plan without executing
-  --quality-gate/--no-quality-gate  Enable/disable Opus quality review (default: on)
+  --quality-gate/--no-quality-gate  Enable/disable final quality review (default: on)
   --no-ui                   Disable rich terminal UI
   -v, --version             Show version
 
@@ -154,21 +160,24 @@ Create `swarm.yaml` in your project root to define custom agent types:
 ```yaml
 swarm:
   name: full-stack-review
+  provider: copilot
   max_concurrent: 4
   budget_usd: 5.0
-  model: opus
+  model: gpt-5
+  review_model: gpt-5-mini
+  worker_model: gpt-5-codex
 
 agents:
   security-reviewer:
     description: Reviews code for OWASP vulnerabilities
-    model: opus
+    model: gpt-5
     tools: [Read, Grep, Glob]
     prompt: |
       Analyze the code for SQL injection, XSS, CSRF...
 
   tester:
     description: Writes and runs tests
-    model: haiku
+    model: gpt-5-codex
     tools: [Read, Write, Edit, Bash]
     prompt: |
       Write comprehensive tests. Ensure 80% coverage...
@@ -184,25 +193,29 @@ connections:
 
 Claude Swarm auto-detects `swarm.yaml` or `.claude/swarm.yaml` in your project.
 
-## How Opus 4.6 Is Used
+## Providers and Models
 
-Claude Swarm demonstrates strategic model selection with **two critical Opus 4.6 touchpoints**:
+Claude Swarm now separates orchestration from agent runtime.
 
-### Phase 1: Task Decomposition (Planning)
-Opus 4.6 handles the hardest reasoning task — analyzing your codebase, understanding the architecture, identifying dependencies between subtasks, and producing a parallelizable execution plan. This requires deep understanding of code relationships and optimal task splitting.
+- `claude` uses `claude-agent-sdk` and requires `ANTHROPIC_API_KEY`
+- `copilot` uses `github-copilot-sdk` and your local Copilot authentication/session
+- `model` configures the planning phase
+- `review_model` configures the quality gate
+- `worker_model` provides the default model for task execution
+- Per-agent `model` entries in `swarm.yaml` override the default worker model
 
-### Phase 2: Worker Execution
-Haiku handles the parallelizable work — each agent follows focused instructions from the plan. Using Haiku here is 3x cheaper while maintaining 90% of Sonnet's capability for focused tasks.
+The orchestrator, retries, conflict detection, TUI, and session replay remain local to `claude-swarm`; only the agent runtime changes by provider.
 
-### Phase 2.5: Quality Gate (Review)
-After all agents complete, Opus 4.6 reviews the combined output. It checks for integration issues between agents' work, missed edge cases, security concerns, and whether the original task was fully addressed. This catches problems that individual agents can't see.
+## Cost Tracking Notes
 
-This mirrors real engineering team structure: **a senior architect designs the plan, junior engineers execute in parallel, and the senior reviews the combined result**.
+- Claude runs report cost through the SDK and participate fully in budget accounting.
+- Copilot runs are supported through the runtime abstraction, but provider cost reporting may be limited by the SDK surface. Budget enforcement is therefore most accurate on Claude today.
 
 ## Tech Stack
 
 - **Python 3.11+** with `anyio` for structured async concurrency
-- **claude-agent-sdk** (v0.1.35+) for Claude Code subprocess control
+- **claude-agent-sdk** (v0.1.35+) for the Claude runtime
+- **github-copilot-sdk** for the Copilot runtime
 - **Rich** for terminal UI (Live dashboard with panels and tables)
 - **Click** for CLI framework
 - **Pydantic** for data validation
@@ -229,9 +242,10 @@ ruff check src/ tests/
 src/claude_swarm/
   cli.py           CLI entry point (Click group + subcommands)
   types.py         Core dataclasses (SwarmTask, SwarmPlan, etc.)
-  decomposer.py    Opus 4.6 task decomposition
+  runtime.py       Provider abstraction for Claude and Copilot runtimes
+  decomposer.py    Provider-backed task decomposition
   orchestrator.py  Parallel execution with file locks, budget, retries
-  quality_gate.py  Opus 4.6 quality review of agent outputs
+  quality_gate.py  Provider-backed quality review of agent outputs
   demo.py          Demo simulation with animated TUI
   config.py        YAML swarm topology configuration
   session.py       JSONL event recording and replay
@@ -244,6 +258,7 @@ MIT — [Affaan Mustafa](https://x.com/affaanmustafa)
 
 ## Acknowledgments
 
-- [Claude Agent SDK](https://github.com/anthropics/claude-agent-sdk-python) for the subprocess control layer
+- [Claude Agent SDK](https://github.com/anthropics/claude-agent-sdk-python) for the Claude runtime
+- [GitHub Copilot SDK](https://github.com/github/copilot-sdk) for the Copilot runtime
 - [Everything Claude Code](https://github.com/affaan-m/everything-claude-code) for agent patterns and inspiration
 - Built for the [Cerebral Valley x Anthropic Claude Code Hackathon](https://cerebralvalley.ai/hackathons/claude-code-hackathon-aaHFuycPfjQa5dNaxZpU)
