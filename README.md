@@ -1,4 +1,4 @@
-# Claude Swarm
+# Agent Swarm
 
 [![PyPI](https://img.shields.io/pypi/v/claude-swarm)](https://pypi.org/project/claude-swarm/)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
