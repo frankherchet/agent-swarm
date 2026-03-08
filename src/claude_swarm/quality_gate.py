@@ -16,9 +16,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 
-from claude_agent_sdk import ClaudeAgentOptions, query
-from claude_agent_sdk.types import AssistantMessage, ResultMessage, TextBlock
-
+from .runtime import AgentRuntime
 from .types import SwarmResult
 
 QUALITY_GATE_PROMPT = (
@@ -79,6 +77,7 @@ class QualityReport:
 async def run_quality_gate(
     result: SwarmResult,
     cwd: str,
+    runtime: AgentRuntime,
     model: str = "opus",
 ) -> QualityReport:
     """Run Opus 4.6 quality gate on completed agent work.
@@ -98,25 +97,14 @@ async def run_quality_gate(
         task_summaries=task_summaries,
     )
 
-    options = ClaudeAgentOptions(
-        model=model,
+    review_result = await runtime.generate_text(
+        prompt=prompt,
         cwd=cwd,
-        permission_mode="default",
+        model=model,
         max_turns=2,
     )
 
-    collected_text = ""
-    review_cost = 0.0
-
-    async for message in query(prompt=prompt, options=options):
-        if isinstance(message, AssistantMessage):
-            for block in message.content:
-                if isinstance(block, TextBlock):
-                    collected_text += block.text
-        elif isinstance(message, ResultMessage):
-            review_cost = message.total_cost_usd or 0.0
-
-    return _parse_quality_report(collected_text, review_cost)
+    return _parse_quality_report(review_result.text, review_result.total_cost_usd)
 
 
 def _build_task_summaries(result: SwarmResult) -> str:

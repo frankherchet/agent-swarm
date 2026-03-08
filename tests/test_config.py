@@ -72,5 +72,21 @@ def test_get_agent_tools_with_fallback() -> None:
 def test_config_defaults() -> None:
     config = SwarmConfig()
     assert config.name == "default"
+    assert config.provider == "claude"
     assert config.model == "opus"
     assert config.max_concurrent == 4
+
+
+def test_config_provider_models() -> None:
+    config = SwarmConfig.from_dict({
+        "swarm": {
+            "provider": "copilot",
+            "model": "gpt-5",
+            "review_model": "gpt-5-mini",
+            "worker_model": "gpt-5-codex",
+        },
+    })
+    assert config.provider == "copilot"
+    assert config.model == "gpt-5"
+    assert config.review_model == "gpt-5-mini"
+    assert config.worker_model == "gpt-5-codex"

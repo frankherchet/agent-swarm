@@ -8,18 +8,8 @@ from collections.abc import Callable
 from typing import Any
 
 import anyio
-from claude_agent_sdk import ClaudeAgentOptions, query
-from claude_agent_sdk.types import (
-    AssistantMessage,
-    HookContext,
-    HookInput,
-    HookJSONOutput,
-    HookMatcher,
-    ResultMessage,
-    TextBlock,
-    ToolUseBlock,
-)
 
+from .runtime import AgentRuntime
 from .session import SessionRecorder
 from .types import (
     AgentStatus,
@@ -50,6 +40,8 @@ class SwarmOrchestrator:
         cwd: str,
         max_concurrent: int = 4,
         max_budget_usd: float = 5.0,
+        runtime: AgentRuntime | None = None,
+        default_worker_model: str | None = None,
         on_update: OnUpdate | None = None,
         on_agent_event: OnAgentEvent | None = None,
         recorder: SessionRecorder | None = None,
@@ -59,6 +51,8 @@ class SwarmOrchestrator:
         self.cwd = cwd
         self.max_concurrent = max_concurrent
         self.max_budget_usd = max_budget_usd
+        self.runtime = runtime
+        self.default_worker_model = default_worker_model
         self.on_update = on_update or (lambda: None)
         self.on_agent_event = on_agent_event or (lambda *_: None)
         self.recorder = recorder
@@ -163,44 +157,30 @@ class SwarmOrchestrator:
         self.on_update()
 
         try:
-            # Create hooks for tracking this agent's activity
-            hooks = self._create_agent_hooks(agent)
-
-            options = ClaudeAgentOptions(
-                model="haiku",
-                cwd=self.cwd,
-                permission_mode="acceptEdits",
-                max_turns=20,
-                max_budget_usd=0.50,
-                hooks=hooks,
-                allowed_tools=task.tools,
-            )
-
-            collected_text = ""
             task_start = time.monotonic()
+            model = task.model or self.default_worker_model
+            if not model:
+                if not self.runtime:
+                    raise RuntimeError("No runtime configured")
+                model = self.runtime.default_worker_model
 
-            async for message in query(prompt=task.prompt, options=options):
-                if isinstance(message, AssistantMessage):
-                    for block in message.content:
-                        if isinstance(block, TextBlock):
-                            collected_text += block.text
-                        elif isinstance(block, ToolUseBlock):
-                            agent.current_tool = block.name
-                            agent.turns += 1
-                            self.on_agent_event(
-                                agent_id, "tool_use", {"tool": block.name, "input": block.input}
-                            )
-                            if self.recorder:
-                                self.recorder.record_tool_use(
-                                    agent_id, task.id, block.name, block.input
-                                )
-                            self.on_update()
-                elif isinstance(message, ResultMessage):
-                    task.cost_usd = message.total_cost_usd or 0.0
-                    self.total_cost += task.cost_usd
+            if not self.runtime:
+                raise RuntimeError("No runtime configured")
+
+            runtime_result = await self.runtime.run_task(
+                task,
+                self.cwd,
+                model=model,
+                on_tool_use=lambda tool, tool_input: self._handle_tool_use(
+                    agent_id, agent, task, tool, tool_input
+                ),
+                on_file_write=lambda file_path: self._track_file_write(agent, file_path),
+            )
+            task.cost_usd = runtime_result.total_cost_usd
+            self.total_cost += task.cost_usd
 
             task.duration_ms = int((time.monotonic() - task_start) * 1000)
-            task.result = collected_text
+            task.result = runtime_result.text
             task.status = TaskStatus.COMPLETED
             task.assigned_agent = agent_id
             self.completed_task_ids.add(task.id)
@@ -244,27 +224,24 @@ class SwarmOrchestrator:
             self._update_blocked_tasks(task.id)
             self.on_update()
 
-    def _create_agent_hooks(self, agent: SwarmAgent) -> dict[str, list[HookMatcher]]:
-        """Create hooks to track an agent's file modifications."""
+    def _handle_tool_use(
+        self,
+        agent_id: str,
+        agent: SwarmAgent,
+        task: SwarmTask,
+        tool_name: str,
+        tool_input: dict[str, Any],
+    ) -> None:
+        agent.current_tool = tool_name
+        agent.turns += 1
+        self.on_agent_event(agent_id, "tool_use", {"tool": tool_name, "input": tool_input})
+        if self.recorder:
+            self.recorder.record_tool_use(agent_id, task.id, tool_name, tool_input)
+        self.on_update()
 
-        async def track_file_writes(
-            input_data: HookInput, tool_use_id: str | None, context: HookContext
-        ) -> HookJSONOutput:
-            tool_name = input_data.get("tool_name", "")
-            tool_input = input_data.get("tool_input", {})
-
-            if tool_name in ("Write", "Edit"):
-                file_path = tool_input.get("file_path", "")
-                if file_path and file_path not in agent.files_modified:
-                    agent.files_modified.append(file_path)
-
-            return {}
-
-        return {
-            "PostToolUse": [
-                HookMatcher(matcher="Write|Edit", hooks=[track_file_writes]),
-            ],
-        }
+    def _track_file_write(self, agent: SwarmAgent, file_path: str) -> None:
+        if file_path and file_path not in agent.files_modified:
+            agent.files_modified.append(file_path)
 
     def _get_ready_tasks(self) -> list[SwarmTask]:
         """Get tasks whose dependencies are all completed."""

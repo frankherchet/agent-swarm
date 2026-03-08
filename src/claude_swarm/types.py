@@ -44,6 +44,7 @@ class SwarmTask:
     cost_usd: float = 0.0
     duration_ms: int = 0
     tools: list[str] = field(default_factory=list)
+    model: str | None = None
     prompt: str = ""
 
     @property
@@ -57,7 +58,7 @@ class SwarmTask:
             "description": self.description,
             "prompt": self.prompt,
             "tools": self.tools or None,
-            "model": "haiku",
+            "model": self.model or "haiku",
         }
 
 

@@ -14,6 +14,13 @@ from . import __version__
 @click.group(invoke_without_command=True)
 @click.argument("task", required=False)
 @click.option("--cwd", "-d", default=".", help="Working directory for the project")
+@click.option(
+    "--provider",
+    type=click.Choice(["claude", "copilot"]),
+    default="claude",
+    show_default=True,
+    help="Agent runtime provider",
+)
 @click.option("--max-agents", "-n", default=4, help="Maximum concurrent agents (default: 4)")
 @click.option("--model", "-m", default="opus", help="Model for task decomposition (default: opus)")
 @click.option("--dry-run", is_flag=True, help="Show plan without executing")
@@ -23,7 +30,7 @@ from . import __version__
 @click.option("--demo", is_flag=True, help="Run a demo simulation (no API key needed)")
 @click.option(
     "--quality-gate/--no-quality-gate", default=True,
-    help="Enable/disable Opus quality review (default: enabled)",
+    help="Enable/disable final quality review (default: enabled)",
 )
 @click.option("--retry", "-r", default=1, help="Max retries for failed tasks (default: 1)")
 @click.option("--version", "-v", is_flag=True, help="Show version")
@@ -32,6 +39,7 @@ def main(
     ctx: click.Context,
     task: str | None,
     cwd: str,
+    provider: str,
     max_agents: int,
     model: str,
     dry_run: bool,
@@ -76,28 +84,29 @@ def main(
         click.echo("       claude-swarm sessions  # List past sessions")
         return
 
-    if not os.environ.get("ANTHROPIC_API_KEY"):
-        click.echo("Error: ANTHROPIC_API_KEY environment variable not set.")
-        click.echo("Get your key at: https://console.anthropic.com/settings/keys")
-        click.echo("Tip: Use --demo for a simulated run without an API key")
-        sys.exit(1)
-
     resolved_cwd = os.path.abspath(cwd)
 
-    asyncio.run(
-        _run_swarm(
-            task=task,
-            cwd=resolved_cwd,
-            max_agents=max_agents,
-            model=model,
-            dry_run=dry_run,
-            no_ui=no_ui,
-            budget=budget,
-            config_path=config,
-            quality_gate=quality_gate,
-            max_retries=retry,
+    try:
+        asyncio.run(
+            _run_swarm(
+                task=task,
+                cwd=resolved_cwd,
+                provider=provider,
+                max_agents=max_agents,
+                model=model,
+                dry_run=dry_run,
+                no_ui=no_ui,
+                budget=budget,
+                config_path=config,
+                quality_gate=quality_gate,
+                max_retries=retry,
+            )
         )
-    )
+    except RuntimeError as exc:
+        click.echo(f"Error: {exc}")
+        if provider == "claude":
+            click.echo("Tip: Use --demo for a simulated run without an API key")
+        sys.exit(1)
 
 
 @main.command()
@@ -191,6 +200,7 @@ def replay(session_id: str) -> None:
 async def _run_swarm(
     task: str,
     cwd: str,
+    provider: str,
     max_agents: int,
     model: str,
     dry_run: bool,
@@ -204,6 +214,7 @@ async def _run_swarm(
     from .config import SwarmConfig, find_config
     from .decomposer import decompose_task
     from .orchestrator import SwarmOrchestrator
+    from .runtime import create_runtime
     from .session import SessionRecorder
     from .ui import SwarmUI
 
@@ -221,17 +232,34 @@ async def _run_swarm(
 
     # Apply config overrides
     if swarm_config:
+        provider = swarm_config.provider
         max_agents = swarm_config.max_concurrent
         budget = swarm_config.budget_usd
         model = swarm_config.model
+    review_model = swarm_config.review_model if swarm_config else None
+    worker_model = swarm_config.worker_model if swarm_config else None
+
+    runtime = create_runtime(provider)
+    runtime.validate_environment()
 
     # Initialize session recorder
     recorder = SessionRecorder()
-    recorder.start(prompt=task, cwd=cwd)
+    recorder.start(prompt=task, cwd=cwd, provider=provider)
 
     # Phase 1: Decompose
-    ui.console.print("[bold blue]Phase 1:[/bold blue] Decomposing task with Opus 4.6...")
-    plan = await decompose_task(prompt=task, cwd=cwd, model=model)
+    ui.console.print(f"[bold blue]Phase 1:[/bold blue] Decomposing task with {provider}...")
+    plan = await decompose_task(prompt=task, cwd=cwd, runtime=runtime, model=model)
+
+    if swarm_config:
+        for plan_task in plan.tasks:
+            agent_prompt = swarm_config.get_agent_prompt(plan_task.agent_type)
+            if agent_prompt:
+                plan_task.prompt = f"{agent_prompt}\n\n{plan_task.prompt}".strip()
+            plan_task.tools = swarm_config.get_agent_tools(plan_task.agent_type)
+            plan_task.model = plan_task.model or swarm_config.get_agent_model(plan_task.agent_type)
+            if not plan_task.model and worker_model:
+                plan_task.model = worker_model
+
     ui.print_plan(plan)
 
     # Record the plan
@@ -275,6 +303,8 @@ async def _run_swarm(
         cwd=cwd,
         max_concurrent=max_agents,
         max_budget_usd=budget,
+        runtime=runtime,
+        default_worker_model=worker_model or runtime.default_worker_model,
         recorder=recorder,
         max_retries=max_retries,
     )
@@ -302,11 +332,16 @@ async def _run_swarm(
     # Phase 2.5: Quality Gate (Opus reviews agent outputs)
     quality_report = None
     if quality_gate and result.completed_tasks:
-        ui.console.print("\n[bold magenta]Phase 2.5:[/bold magenta] Opus 4.6 Quality Gate...")
+        ui.console.print(f"\n[bold magenta]Phase 2.5:[/bold magenta] {provider.title()} Quality Gate...")
         try:
             from .quality_gate import run_quality_gate
 
-            quality_report = await run_quality_gate(result=result, cwd=cwd, model=model)
+            quality_report = await run_quality_gate(
+                result=result,
+                cwd=cwd,
+                runtime=runtime,
+                model=review_model or model,
+            )
             result.total_cost_usd += quality_report.review_cost_usd
             recorder._record_event(
                 "quality_gate",
@@ -315,6 +350,7 @@ async def _run_swarm(
                     "verdict": quality_report.verdict,
                     "summary": quality_report.summary,
                     "review_cost_usd": quality_report.review_cost_usd,
+                    "provider": provider,
                 },
             )
         except Exception as exc:

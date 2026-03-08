@@ -216,7 +216,7 @@ class SwarmUI:
                 f"[{verdict_style}]Verdict: {report.verdict.upper()}[/{verdict_style}]  |  "
                 f"[dim]Review cost: ${report.review_cost_usd:.4f}[/dim]\n\n"
                 f"{report.summary}",
-                title="[bold magenta]Opus 4.6 Quality Gate[/bold magenta]",
+                title="[bold magenta]Quality Gate[/bold magenta]",
             )
         )
 

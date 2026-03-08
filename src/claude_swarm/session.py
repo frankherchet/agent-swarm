@@ -51,17 +51,22 @@ class SessionRecorder:
         self.start_time = time.time()
         self._metadata: dict[str, Any] = {}
 
-    def start(self, prompt: str, cwd: str) -> None:
+    def start(self, prompt: str, cwd: str, provider: str | None = None) -> None:
         """Initialize a new recording session."""
         self.session_dir.mkdir(parents=True, exist_ok=True)
         self.start_time = time.time()
         self._metadata = {
+            "schema_version": 2,
             "session_id": self.session_id,
             "prompt": prompt,
             "cwd": cwd,
+            "provider": provider,
             "start_time": self.start_time,
         }
-        self._record_event("session_started", data={"prompt": prompt, "cwd": cwd})
+        self._record_event(
+            "session_started",
+            data={"prompt": prompt, "cwd": cwd, "provider": provider},
+        )
 
     def record_plan(self, plan_data: dict[str, Any]) -> None:
         """Record the decomposed plan."""

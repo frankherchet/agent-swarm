@@ -73,9 +73,12 @@ class SwarmConfig:
     """Full swarm configuration loaded from YAML."""
 
     name: str = "default"
+    provider: str = "claude"
     max_concurrent: int = 4
     budget_usd: float = 5.0
     model: str = "opus"  # model for task decomposition
+    review_model: str | None = None
+    worker_model: str | None = None
     agents: dict[str, AgentConfig] = field(default_factory=dict)
     connections: list[ConnectionConfig] = field(default_factory=list)
 
@@ -102,9 +105,12 @@ class SwarmConfig:
         swarm_data = data.get("swarm", {})
         config = cls(
             name=swarm_data.get("name", "default"),
+            provider=swarm_data.get("provider", "claude"),
             max_concurrent=swarm_data.get("max_concurrent", 4),
             budget_usd=swarm_data.get("budget_usd", 5.0),
             model=swarm_data.get("model", "opus"),
+            review_model=swarm_data.get("review_model"),
+            worker_model=swarm_data.get("worker_model"),
         )
 
         # Parse agents

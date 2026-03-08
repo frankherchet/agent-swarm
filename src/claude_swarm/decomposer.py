@@ -5,9 +5,7 @@ from __future__ import annotations
 import json
 import uuid
 
-from claude_agent_sdk import ClaudeAgentOptions, query
-from claude_agent_sdk.types import AssistantMessage, ResultMessage, TextBlock
-
+from .runtime import AgentRuntime
 from .types import SwarmPlan, SwarmTask, TaskStatus
 
 DECOMPOSE_SYSTEM_PROMPT = """You are a task decomposition expert. \
@@ -54,6 +52,7 @@ IMPORTANT:
 async def decompose_task(
     prompt: str,
     cwd: str,
+    runtime: AgentRuntime,
     model: str = "opus",
 ) -> SwarmPlan:
     """Use Opus 4.6 to decompose a complex task into a dependency graph.
@@ -66,13 +65,6 @@ async def decompose_task(
     Returns:
         SwarmPlan with tasks and dependency information
     """
-    options = ClaudeAgentOptions(
-        model=model,
-        cwd=cwd,
-        permission_mode="default",
-        max_turns=3,
-    )
-
     decompose_prompt = f"""{DECOMPOSE_SYSTEM_PROMPT}
 
 PROJECT DIRECTORY: {cwd}
@@ -84,25 +76,21 @@ First, explore the codebase to understand the structure. \
 Then output your decomposition as a JSON code block.
 """
 
-    collected_text = ""
-    total_cost = 0.0
-
-    async for message in query(prompt=decompose_prompt, options=options):
-        if isinstance(message, AssistantMessage):
-            for block in message.content:
-                if isinstance(block, TextBlock):
-                    collected_text += block.text
-        elif isinstance(message, ResultMessage):
-            total_cost = message.total_cost_usd or 0.0
+    result = await runtime.generate_text(
+        prompt=decompose_prompt,
+        cwd=cwd,
+        model=model,
+        max_turns=3,
+    )
 
     # Extract JSON from the response
-    tasks = _parse_decomposition(collected_text)
+    tasks = _parse_decomposition(result.text)
 
     return SwarmPlan(
         original_prompt=prompt,
         tasks=tasks,
-        estimated_total_cost=total_cost * len(tasks),  # rough estimate
-        model_used=model,
+        estimated_total_cost=result.total_cost_usd * len(tasks),  # rough estimate
+        model_used=f"{runtime.provider}:{model}",
     )
 
 
@@ -139,6 +127,7 @@ def _parse_decomposition(text: str) -> list[SwarmTask]:
             dependencies=item.get("dependencies", []),
             files_to_modify=item.get("files_to_modify", []),
             tools=item.get("tools", ["Read", "Write", "Edit", "Bash", "Grep", "Glob"]),
+            model=item.get("model"),
             prompt=item.get("prompt", item.get("description", "")),
             status=TaskStatus.PENDING,
         )
